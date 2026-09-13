@@ -5,7 +5,7 @@
 
 // Auto-detect environment: use localhost when testing locally, Render URL when deployed on Vercel
 const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-const DEFAULT_RENDER_URL = 'https://agentic-rag-project.onrender.com';
+const DEFAULT_RENDER_URL = 'https://agentic-rag-backend-os1d.onrender.com';
 
 const API_BASE = isLocal
   ? 'http://localhost:8000'
