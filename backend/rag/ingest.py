@@ -45,7 +45,10 @@ def _get_collection():
     objects to avoid the overhead of reconnecting on every request."""
     global _chroma_client, _collection
     if _chroma_client is None:
-        _chroma_client = chromadb.PersistentClient(path=settings.CHROMA_DB_PATH)
+        _chroma_client = chromadb.PersistentClient(
+            path=settings.CHROMA_DB_PATH,
+            settings=chromadb.config.Settings(anonymized_telemetry=False),
+        )
     if _collection is None:
         _collection = _chroma_client.get_or_create_collection(
             name=settings.COLLECTION_NAME,
@@ -133,30 +136,83 @@ def _delete_existing_chunks(collection, source_name: str):
         pass
 
 
-def ingest_pdf(pdf_path: str, source_name: str | None = None) -> Dict:
-    """
-    Ingest one PDF: extract per-page text, chunk it, embed, and store
-    in ChromaDB with metadata (source file name + page number) attached
-    to every chunk. This metadata is what makes citation possible later.
+def _extract_text_file(file_path: str) -> List[Dict]:
+    """Extracts text from plaintext files (.txt, .md, .csv) with encoding fallbacks,
+    paginating into chunks of ~2500 characters so page citations work cleanly."""
+    content = ""
+    for enc in ["utf-8", "utf-8-sig", "latin-1", "cp1252"]:
+        try:
+            with open(file_path, "r", encoding=enc) as f:
+                content = f.read()
+            break
+        except (UnicodeDecodeError, UnicodeError):
+            continue
 
+    if not content or not content.strip():
+        return []
+
+    # Clean null bytes and carriage returns
+    content = content.replace("\x00", "").replace("\r\n", "\n")
+
+    # Split into logical pages (~2500 chars) preserving line breaks
+    page_size = 2500
+    pages = []
+    lines = content.split("\n")
+    current_page_text = []
+    current_len = 0
+    page_num = 1
+
+    for line in lines:
+        current_page_text.append(line)
+        current_len += len(line) + 1
+        if current_len >= page_size:
+            text = "\n".join(current_page_text).strip()
+            if text:
+                pages.append({"page_number": page_num, "text": text})
+                page_num += 1
+            current_page_text = []
+            current_len = 0
+
+    if current_page_text:
+        text = "\n".join(current_page_text).strip()
+        if text:
+            pages.append({"page_number": page_num, "text": text})
+
+    return pages
+
+
+def ingest_file(file_path: str, source_name: str | None = None) -> Dict:
+    """
+    Ingest a document (.pdf, .txt, .md): extract per-page text, chunk it,
+    embed, and store in ChromaDB with metadata (source file name + page number).
+    
     If a document with the same source_name already exists, its old
     chunks are deleted first to prevent duplicates on re-upload.
-    
-    Uses PyMuPDF for fast extraction (10-15s total for typical PDFs).
     """
     import logging
     logger = logging.getLogger(__name__)
 
-    source_name = source_name or Path(pdf_path).name
-    logger.info(f"Starting ingestion of {source_name}")
+    path = Path(file_path)
+    source_name = source_name or path.name
+    ext = path.suffix.lower()
 
-    # Fast extraction
-    pages = _extract_pages_fast(pdf_path)
+    logger.info(f"Starting ingestion of {source_name} (type: {ext})")
+
+    if ext == ".pdf":
+        pages = _extract_pages_fast(file_path)
+    elif ext in [".txt", ".md", ".csv", ".json", ".log"]:
+        pages = _extract_text_file(file_path)
+    else:
+        # Try fast pdf first, then fallback to text
+        try:
+            pages = _extract_pages_fast(file_path)
+        except Exception:
+            pages = _extract_text_file(file_path)
+
     if not pages:
         raise ValueError(
             f"No extractable text found in {source_name}. "
-            f"It may be a scanned/image-only PDF. "
-            f"Please use a PDF with selectable text."
+            f"Please make sure the file contains readable text."
         )
 
     logger.info(f"Extracted {len(pages)} pages from {source_name}")
@@ -204,9 +260,21 @@ def ingest_pdf(pdf_path: str, source_name: str | None = None) -> Dict:
     }
 
 
+# Backward compatibility alias
+ingest_pdf = ingest_file
+
+
 def list_ingested_sources() -> List[str]:
     """Returns unique source file names currently in the vector store."""
     collection = _get_collection()
     data = collection.get(include=["metadatas"])
     sources = {m["source"] for m in data["metadatas"]}
     return sorted(sources)
+
+
+def delete_source(source_name: str) -> bool:
+    """Removes all chunks of a source document from ChromaDB."""
+    collection = _get_collection()
+    _delete_existing_chunks(collection, source_name)
+    return True
+

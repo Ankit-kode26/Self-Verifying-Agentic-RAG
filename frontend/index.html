@@ -40,9 +40,12 @@
           <div class="header-subtitle">Neural Document Intelligence</div>
         </div>
       </div>
-      <div class="header-status" id="health-status">
-        <div class="status-dot" id="status-dot"></div>
-        <span id="status-text">Connecting…</span>
+      <div class="header-actions">
+        <button class="clear-chat-btn" id="clear-chat-btn" title="Clear conversation history">🗑 Clear Chat</button>
+        <div class="header-status" id="health-status">
+          <div class="status-dot" id="status-dot"></div>
+          <span id="status-text">Connecting…</span>
+        </div>
       </div>
     </header>
 
@@ -59,10 +62,10 @@
       <div class="upload-zone" id="upload-zone">
         <div class="upload-zone-content">
           <div class="upload-icon">📄</div>
-          <div class="upload-text">Drop PDFs here or click to upload</div>
-          <div class="upload-hint">Supports .pdf files • Max 100MB</div>
+          <div class="upload-text">Drop documents here or click to upload</div>
+          <div class="upload-hint">Supports PDF, TXT, MD • Max 100MB</div>
         </div>
-        <input type="file" class="upload-input" id="upload-input" accept=".pdf" multiple>
+        <input type="file" class="upload-input" id="upload-input" accept=".pdf,.txt,.md,.csv,.json" multiple>
       </div>
 
       <!-- Upload Progress -->
@@ -84,13 +87,6 @@
 
     <!-- ─── Main: Chat Area ────────────────────────────── -->
     <main class="main">
-
-      <!-- 3D Carousel Background (scoped to answer panel) -->
-      <div class="carousel-3d-wrapper" id="carousel-3d-wrapper" aria-hidden="true">
-        <div class="carousel-3d-scene" id="carousel-3d-scene">
-          <!-- Cards injected by JS -->
-        </div>
-      </div>
 
       <!-- Chat Messages -->
       <div class="chat-container" id="chat-container">

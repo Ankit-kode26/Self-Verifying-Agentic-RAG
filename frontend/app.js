@@ -3,7 +3,14 @@
    Application Logic
    ============================================================ */
 
-const API_BASE = 'https://agentic-rag-backend-os1d.onrender.com';
+// Auto-detect environment: use localhost when testing locally, Render URL when deployed on Vercel
+const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+const DEFAULT_RENDER_URL = 'https://agentic-rag-project.onrender.com';
+
+const API_BASE = isLocal
+  ? 'http://localhost:8000'
+  : (localStorage.getItem('RAG_API_BASE') || DEFAULT_RENDER_URL);
+
 
 // ── DOM References ──────────────────────────────────────────
 const $ = (sel) => document.querySelector(sel);
@@ -29,6 +36,7 @@ const els = {
   queryInput: $('#query-input'),
   sendBtn: $('#send-btn'),
   toastContainer: $('#toast-container'),
+  clearChatBtn: $('#clear-chat-btn'),
 };
 
 // ── State ───────────────────────────────────────────────────
@@ -43,6 +51,7 @@ const state = {
 // ── Constants ───────────────────────────────────────────────
 const UPLOAD_TIMEOUT_MS = 120_000;
 const QUERY_TIMEOUT_MS = 60_000;
+const ALLOWED_EXTS = ['.pdf', '.txt', '.md', '.csv', '.json', '.log'];
 
 const THINKING_MESSAGES = [
   { emoji: '🔍', text: 'Searching your documents…' },
@@ -53,53 +62,7 @@ const THINKING_MESSAGES = [
   { emoji: '📑', text: 'Attaching source citations…' },
 ];
 
-// ── 3D Carousel ─────────────────────────────────────────────
-const CAROUSEL_CARDS = [
-  { icon: '🧠', label: 'Neural RAG', dots: 3 },
-  { icon: '📄', label: 'Document Store', dots: 4 },
-  { icon: '🔍', label: 'Vector Search', dots: 3 },
-  { icon: '⚖️', label: 'Agent Judge', dots: 5 },
-  { icon: '🎯', label: 'Reranking', dots: 4 },
-  { icon: '✨', label: 'LLM Generate', dots: 3 },
-  { icon: '📊', label: 'Citations', dots: 4 },
-  { icon: '🔗', label: 'Chunk Index', dots: 3 },
-];
-
-function initCarousel() {
-  const scene = $('#carousel-3d-scene');
-  if (!scene) return;
-
-  const n = CAROUSEL_CARDS.length;
-  // Radius must be large enough so cards don't overlap
-  // For 240px wide cards arranged in a circle: r = (width/2) / tan(PI/n)
-  const cardW = 260;
-  const radius = Math.round((cardW / 2) / Math.tan(Math.PI / n)) + 20;
-
-  CAROUSEL_CARDS.forEach((card, i) => {
-    const angle = (360 / n) * i;
-    const el = document.createElement('div');
-    el.className = 'carousel-3d-card';
-
-    const dots = Array.from({ length: card.dots }, () =>
-      '<span></span>'
-    ).join('');
-
-    el.innerHTML = `
-      <div class="card-icon">${card.icon}</div>
-      <div class="card-label">${card.label}</div>
-      <div class="card-dots">${dots}</div>
-    `;
-
-    // Position each card rotated around Y axis then pushed out along Z
-    el.style.transform = `rotateY(${angle}deg) translateZ(${radius}px)`;
-
-    scene.appendChild(el);
-  });
-
-  // Set the scene width/height for correct perspective centering
-  scene.style.width = `${cardW}px`;
-  scene.style.height = '160px';
-}
+// (3D carousel removed — replaced with CSS radial glow in styles.css)
 
 // ── API Client ──────────────────────────────────────────────
 const api = {
@@ -131,7 +94,7 @@ const api = {
     } catch (err) {
       clearTimeout(timeoutId);
       if (err.name === 'AbortError') {
-        throw new Error('Upload timed out. Try a smaller PDF or check your connection.');
+        throw new Error('Upload timed out. Try a smaller document or check your connection.');
       }
       throw err;
     }
@@ -143,15 +106,24 @@ const api = {
     return res.json();
   },
 
-  async query(question) {
+  async deleteDocument(name) {
+    const res = await fetch(`${API_BASE}/documents/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error('Failed to delete document');
+    return res.json();
+  },
+
+  async query(question, history = [], { signal } = {}) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), QUERY_TIMEOUT_MS);
+    if (signal) signal.addEventListener('abort', () => controller.abort());
 
     try {
       const res = await fetch(`${API_BASE}/query`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question }),
+        body: JSON.stringify({ question, history }),
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
@@ -164,7 +136,12 @@ const api = {
     } catch (err) {
       clearTimeout(timeoutId);
       if (err.name === 'AbortError') {
-        throw new Error('Query timed out. Try a simpler question.');
+        throw new Error('Query timed out. The backend may be busy — please try again.');
+      }
+      if (err.message === 'Failed to fetch' || err.name === 'TypeError') {
+        throw new Error(
+          'Cannot reach backend. Make sure the backend server is running at http://localhost:8000.'
+        );
       }
       throw err;
     }
@@ -197,9 +174,13 @@ function showToast(type, title, message, duration = 4000) {
 async function checkHealth() {
   try {
     await api.health();
+    const wasOffline = !state.backendOnline;
     state.backendOnline = true;
     els.statusDot.className = 'status-dot online';
     els.statusText.textContent = 'Backend online';
+    if (wasOffline || state.documents.length === 0) {
+      await loadDocuments();
+    }
   } catch {
     state.backendOnline = false;
     els.statusDot.className = 'status-dot offline';
@@ -254,7 +235,23 @@ function renderDocuments(newDoc = null) {
           ${chunksText ? `<span class="doc-meta-item">🧩 ${chunksText}</span>` : ''}
         </div>
       </div>
+      <button class="doc-delete-btn" data-doc="${safeName}" title="Delete document">✕</button>
     `;
+
+    const delBtn = card.querySelector('.doc-delete-btn');
+    if (delBtn) {
+      delBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        try {
+          await api.deleteDocument(docName);
+          showToast('info', 'Document removed', docName);
+          await loadDocuments();
+        } catch (err) {
+          showToast('error', 'Delete failed', err.message);
+        }
+      });
+    }
+
     els.docList.appendChild(card);
 
     if (isNew) {
@@ -292,6 +289,11 @@ function spawnCelebrationParticles(container) {
 }
 
 // ── File Upload ─────────────────────────────────────────────
+function isAllowedFile(name) {
+  const lower = name.toLowerCase();
+  return ALLOWED_EXTS.some(ext => lower.endsWith(ext));
+}
+
 function setupUpload() {
   const zone = els.uploadZone;
   const input = els.uploadInput;
@@ -317,13 +319,11 @@ function setupUpload() {
   zone.addEventListener('drop', (e) => {
     e.preventDefault();
     zone.classList.remove('drag-over');
-    const files = Array.from(e.dataTransfer.files).filter(f =>
-      f.name.toLowerCase().endsWith('.pdf')
-    );
+    const files = Array.from(e.dataTransfer.files).filter(f => isAllowedFile(f.name));
     if (files.length > 0) {
       handleFiles(files);
     } else {
-      showToast('error', 'Invalid file', 'Only PDF files are supported.');
+      showToast('error', 'Invalid file', 'Supported formats: PDF, TXT, MD, CSV.');
     }
   });
 }
@@ -792,12 +792,15 @@ async function handleQuery() {
   if (!question || state.isQuerying) return;
 
   if (!state.backendOnline) {
-    showToast('error', 'Backend offline', 'Start the backend with: uvicorn main:app --reload --port 8000');
+    showToast('error', 'Backend offline', 'Please make sure the backend server is running on port 8000.');
     return;
   }
 
   if (state.documents.length === 0) {
-    showToast('info', 'No documents', 'Upload a PDF first before asking questions.');
+    await loadDocuments();
+  }
+  if (state.documents.length === 0) {
+    showToast('info', 'No documents', 'Please upload a document (.pdf, .txt, .md) first.');
     return;
   }
 
@@ -811,7 +814,12 @@ async function handleQuery() {
   startPipeline();
 
   try {
-    const result = await api.query(question);
+    // Send previous dialogue turns so follow-ups have full conversational context
+    const historyPayload = state.messages
+      .slice(-6)
+      .map(m => ({ role: m.role, content: m.content }));
+
+    const result = await api.query(question, historyPayload);
     stopPipeline();
     addAssistantMessage(result);
     state.messages.push({
@@ -833,6 +841,17 @@ async function handleQuery() {
     els.queryInput.focus();
     updateSendBtn();
   }
+}
+
+// ── Clear Chat Handler ──────────────────────────────────────
+function handleClearChat() {
+  state.messages = [];
+  const messages = els.chatContainer.querySelectorAll('.message');
+  messages.forEach(m => m.remove());
+  if (els.welcomeScreen) {
+    els.welcomeScreen.style.display = 'block';
+  }
+  showToast('info', 'Chat reset', 'Conversation history has been cleared.');
 }
 
 // ── Utilities ───────────────────────────────────────────────
@@ -868,13 +887,14 @@ function setupEventListeners() {
   els.sidebarToggle.addEventListener('click', () => {
     els.sidebar.classList.toggle('mobile-open');
   });
+
+  if (els.clearChatBtn) {
+    els.clearChatBtn.addEventListener('click', handleClearChat);
+  }
 }
 
 // ── Initialization ──────────────────────────────────────────
 async function init() {
-  // Build the 3D carousel background
-  initCarousel();
-
   setupUpload();
   setupEventListeners();
 
@@ -884,8 +904,10 @@ async function init() {
     await loadDocuments();
   }
 
-  // Periodic health check every 15s
-  setInterval(checkHealth, 15000);
+  // Periodic health check every 5s if offline, 10s if online
+  setInterval(async () => {
+    await checkHealth();
+  }, state.backendOnline ? 10000 : 4000);
 
   els.queryInput.focus();
 }

@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: agentic-rag-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.5
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: groq/compound-mini
+      - key: GROQ_JUDGE_MODEL
+        value: groq/compound-mini
+      - key: RERANK_ENABLED
+        value: "true"
+      - key: EMBEDDING_MODEL
+        value: all-MiniLM-L6-v2

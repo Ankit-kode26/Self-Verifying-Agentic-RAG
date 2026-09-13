@@ -56,7 +56,10 @@ def _get_collection():
     are created once and reused — this alone saves ~200ms per query."""
     global _chroma_client, _collection
     if _chroma_client is None:
-        _chroma_client = chromadb.PersistentClient(path=settings.CHROMA_DB_PATH)
+        _chroma_client = chromadb.PersistentClient(
+            path=settings.CHROMA_DB_PATH,
+            settings=chromadb.config.Settings(anonymized_telemetry=False),
+        )
     if _collection is None:
         _collection = _chroma_client.get_or_create_collection(
             name=settings.COLLECTION_NAME,
